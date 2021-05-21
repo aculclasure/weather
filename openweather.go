@@ -62,6 +62,30 @@ func (c Client) Current(location, units string) ([]byte, error) {
 	return data, nil
 }
 
+// GeocodeData accepts a location (e.g. "london", "tampa,fl,us", etc.), makes a
+// call to the OpenWeather Geocoding API to retrieve the geographical data for
+// that location and returns the API response as a slice of bytes. An error
+// is returned if the location argument is empty, if the HTTP request to the
+// Geocoding API fails, or if there is a problem reading the response body.
+func (c Client) GeocodeData(location string) ([]byte, error) {
+	if location == "" {
+		return nil, errors.New("location argument must not be empty")
+	}
+
+	URL := fmt.Sprintf("%s/geo/1.0/direct?q=%s&limit=1&appid=%s", c.BaseURL, location, c.APIKey)
+	resp, err := c.HTTPClient.Get(URL)
+	if err != nil {
+		return nil, fmt.Errorf("error getting data from %s: %v", URL, err)
+	}
+	defer resp.Body.Close()
+	data, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading response body: %v", err)
+	}
+
+	return data, nil
+}
+
 // CurrentAPIResp represents a response from a call to the current weather
 // API at OpenWeather.
 type CurrentAPIResp struct {
@@ -93,4 +117,31 @@ func DecodeCurrent(data []byte) (CurrentAPIResp, error) {
 	}
 
 	return resp, nil
+}
+
+// Location represents geographical information returned from the OpenWeather
+// Geocoding API about a particular location.
+type Location struct {
+	Name    string  `json:"name"`
+	Country string  `json:"country"`
+	Lat     float64 `json:"lat"`
+	Lon     float64 `json:"lon"`
+}
+
+// DecodeGeoData accepts a slice of bytes representing a JSON response from a
+// call to the Geocoding API, attempts to decode the data into a slice of
+// Location structs and returns the first Location in the slice. An error is
+// returned if the decoding fails or if the data does not contain any
+// geographical locations.
+func DecodeGeoData(data []byte) (Location, error) {
+	var locations []Location
+
+	if err := json.Unmarshal(data, &locations); err != nil {
+		return Location{}, fmt.Errorf("got error unmarshaling geocode json data: %v", err)
+	}
+	if len(locations) == 0 {
+		return Location{}, errors.New("response from Geocoding API must contain at least one location")
+	}
+
+	return locations[0], nil
 }
