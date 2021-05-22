@@ -17,7 +17,6 @@ const nonJSONData = "123456"
 
 func TestDecodeCurrent(t *testing.T) {
 	t.Parallel()
-
 	validData, err := ioutil.ReadFile("testdata/currentWeatherAPIResp.json")
 	if err != nil {
 		t.Fatal(err)
@@ -71,7 +70,6 @@ func TestDecodeCurrent(t *testing.T) {
 
 func TestGetCurrentWeatherData(t *testing.T) {
 	t.Parallel()
-
 	validData, err := ioutil.ReadFile("testdata/currentWeatherAPIResp.json")
 	if err != nil {
 		t.Fatal(err)
@@ -103,7 +101,6 @@ func TestGetCurrentWeatherData(t *testing.T) {
 
 func TestGetCurrentWeatherWithInvalidArgumentsReturnsError(t *testing.T) {
 	t.Parallel()
-
 	testCases := map[string]struct {
 		location string
 		units    string
@@ -135,7 +132,6 @@ func TestGetCurrentWeatherWithInvalidArgumentsReturnsError(t *testing.T) {
 
 func TestDecodeGeoData(t *testing.T) {
 	t.Parallel()
-
 	emptyData := "[]"
 	validData, err := ioutil.ReadFile("testdata/geocodeAPIResp.json")
 	if err != nil {
@@ -190,7 +186,6 @@ func TestDecodeGeoData(t *testing.T) {
 
 func TestGetGeocodeData(t *testing.T) {
 	t.Parallel()
-
 	client, err := weather.NewClient("apikey")
 	if err != nil {
 		t.Fatalf("got error creating new weather client: %v", err)
@@ -227,6 +222,127 @@ func TestGetGeocodeDataWithoutLocationReturnsError(t *testing.T) {
 	_, err = client.GeocodeData(invalidLoc)
 	if err == nil {
 		t.Fatalf("client.Current(%s) did not return an expected error", invalidLoc)
+	}
+}
+
+func TestDecodeOneCallDailyData(t *testing.T) {
+	t.Parallel()
+	t.Run("Empty data slice argument returns an error", func(t *testing.T) {
+		emptyData := ""
+		_, err := weather.DecodeOneCallDailyData([]byte(emptyData))
+		if err == nil {
+			t.Fatalf("wanted an error but did not get one")
+		}
+	})
+
+	t.Run("Valid data gets decoded into []OneCallDayForecast", func(t *testing.T) {
+		validData, err := ioutil.ReadFile("testdata/oneCallAPIResp.json")
+		if err != nil {
+			t.Fatalf("unable to read test data file: %v", err)
+		}
+		dayForecasts, err := weather.DecodeOneCallDailyData(validData)
+		if err != nil {
+			t.Fatalf("DecodeOneCallDailyData(data) returned unexpected error %v\nfor data:\n%s",
+				err, string(validData))
+		}
+
+		wantLength := 8
+		gotLength := len(dayForecasts)
+		if wantLength != gotLength {
+			t.Fatalf("want []OneCallDayForecast to have length %d, got %d",
+				wantLength, gotLength)
+		}
+
+		comparer := cmp.Comparer(func(f1, f2 weather.OneCallDayForecast) bool {
+			return f1.Date == f2.Date &&
+				closeEnough(f1.Temp.Low, f2.Temp.Low) &&
+				closeEnough(f1.Temp.High, f2.Temp.High) &&
+				f1.Humidity == f2.Humidity &&
+				cmp.Equal(f1.Weather, f2.Weather)
+		})
+		wantFirstDayForecast := weather.OneCallDayForecast{
+			Date:     1621360800,
+			Temp:     weather.OneCallDayTemp{Low: 290.44, High: 298.72},
+			Humidity: 72,
+			Weather:  []weather.OneCallDaySummary{{Desc: "very heavy rain"}},
+		}
+		gotFirstDayForecast := dayForecasts[0]
+		if !cmp.Equal(wantFirstDayForecast, gotFirstDayForecast, comparer) {
+			t.Fatalf("want != got\ndiff=%s", cmp.Diff(
+				wantFirstDayForecast,
+				gotFirstDayForecast,
+				comparer,
+			))
+		}
+	})
+}
+
+func TestGetOneCallData(t *testing.T) {
+	t.Parallel()
+	client, err := weather.NewClient("apikey")
+	if err != nil {
+		t.Fatalf("got error creating new weather client: %v", err)
+	}
+	wantData, err := ioutil.ReadFile("testdata/oneCallAPIResp.json")
+	if err != nil {
+		t.Fatalf("unable to read test data file: %v", err)
+	}
+	wantReqURI := "/data/2.5/onecall?lat=33.44&lon=-94.04&units=standard&appid=apikey"
+	testServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if wantReqURI != r.RequestURI {
+			t.Fatalf("want request URI: %s, got %s", wantReqURI, r.RequestURI)
+		}
+		fmt.Fprint(w, string(wantData))
+	}))
+	defer testServer.Close()
+	client.HTTPClient = testServer.Client()
+	client.BaseURL = testServer.URL
+	gotData, err := client.OneCallData(33.44, -94.04, "standard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(wantData, gotData) {
+		t.Fatalf("want != got\ndiff=%s", cmp.Diff(wantData, gotData))
+	}
+}
+
+func TestGetOneCallDataEncodesExcludedTimeFramesInRequest(t *testing.T) {
+	t.Parallel()
+	client, err := weather.NewClient("apikey")
+	if err != nil {
+		t.Fatalf("got error creating new weather client: %v", err)
+	}
+	wantReqURI := "/data/2.5/onecall?lat=33.44&lon=-94.04&units=standard&appid=apikey&exclude=current,minutely,hourly,alerts"
+	testServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if wantReqURI != r.RequestURI {
+			t.Fatalf("want request URI: %s, got %s", wantReqURI, r.RequestURI)
+		}
+		fmt.Fprint(w, "ok")
+	}))
+	defer testServer.Close()
+	client.HTTPClient = testServer.Client()
+	client.BaseURL = testServer.URL
+	_, err = client.OneCallData(
+		33.44,
+		-94.04,
+		"standard",
+		[]string{"ignored", "current", "ignored", "minutely", "hourly", "alerts", "yearly-ignored"}...)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGetOneCallDataWithInvalidUnitsReturnsError(t *testing.T) {
+	t.Parallel()
+	client, err := weather.NewClient("apikey")
+	if err != nil {
+		t.Fatalf("got error creating new weather client: %v", err)
+	}
+	lat, lon, invalidUnits := 1.00, 2.00, "martian"
+	_, err = client.OneCallData(lat, lon, invalidUnits)
+	if err == nil {
+		t.Fatalf("OneCallData(%.2f, %.2f, %s) did not return an expected error",
+			lat, lon, invalidUnits)
 	}
 }
 

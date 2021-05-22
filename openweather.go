@@ -6,7 +6,13 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"strings"
 	"time"
+)
+
+var (
+	errEmptyLocation = errors.New("location argument must not be empty")
+	errInvalidUnits  = errors.New("units must be one of: standard, metric, imperial")
 )
 
 // Client represents an OpenWeatherMap API client.
@@ -42,10 +48,10 @@ func NewClient(apiKey string) (Client, error) {
 // reading the response body.
 func (c Client) Current(location, units string) ([]byte, error) {
 	if location == "" {
-		return nil, errors.New("location argument must not be empty")
+		return nil, errEmptyLocation
 	}
-	if units != "standard" && units != "metric" && units != "imperial" {
-		return nil, errors.New("units must be one of: standard, metric, imperial")
+	if !validUnit(units) {
+		return nil, errInvalidUnits
 	}
 
 	URL := fmt.Sprintf("%s/data/2.5/weather?q=%s&units=%s&appid=%s", c.BaseURL, location, units, c.APIKey)
@@ -69,10 +75,50 @@ func (c Client) Current(location, units string) ([]byte, error) {
 // Geocoding API fails, or if there is a problem reading the response body.
 func (c Client) GeocodeData(location string) ([]byte, error) {
 	if location == "" {
-		return nil, errors.New("location argument must not be empty")
+		return nil, errEmptyLocation
 	}
 
 	URL := fmt.Sprintf("%s/geo/1.0/direct?q=%s&limit=1&appid=%s", c.BaseURL, location, c.APIKey)
+	resp, err := c.HTTPClient.Get(URL)
+	if err != nil {
+		return nil, fmt.Errorf("error getting data from %s: %v", URL, err)
+	}
+	defer resp.Body.Close()
+	data, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading response body: %v", err)
+	}
+
+	return data, nil
+}
+
+// OneCallData accepts a location's latitude and longitude, a measurement
+// unit ("standard", "metric", or "imperial"), and an optional slice of
+// timeframes to exclude in the response ("hourly", "minutely", "daily",
+// etc.), makes a call to the OpenWeatherMap One Call API to retrieve weather
+// data for that location and returns the API response as a slice of bytes.
+// An error is returned if the units argument is invalid, if the HTTP request
+// to the OpenWeatherMap One Call API fails, or if there is a problem reading
+// the response body.
+func (c Client) OneCallData(lat, lon float64, units string, exclude ...string) ([]byte, error) {
+	if !validUnit(units) {
+		return nil, errInvalidUnits
+	}
+
+	var timeFramesToExclude []string
+	for _, tf := range exclude {
+		tf = strings.ToLower(tf)
+		if tf == "current" || tf == "minutely" || tf == "hourly" || tf == "daily" || tf == "alerts" {
+			timeFramesToExclude = append(timeFramesToExclude, tf)
+		}
+	}
+	var excludes string
+	if len(timeFramesToExclude) > 0 {
+		excludes = fmt.Sprintf("&exclude=%s", strings.Join(timeFramesToExclude, ","))
+	}
+
+	URL := fmt.Sprintf("%s/data/2.5/onecall?lat=%.2f&lon=%.2f&units=%s&appid=%s%s",
+		c.BaseURL, lat, lon, units, c.APIKey, excludes)
 	resp, err := c.HTTPClient.Get(URL)
 	if err != nil {
 		return nil, fmt.Errorf("error getting data from %s: %v", URL, err)
@@ -144,4 +190,55 @@ func DecodeGeoData(data []byte) (Location, error) {
 	}
 
 	return locations[0], nil
+}
+
+// OneCallAPIResp represents a response from the OpenWeather One Call API.
+type OneCallAPIResp struct {
+	Daily []OneCallDayForecast `json:"daily"`
+}
+
+// OneCallDayForecast represents metrics for a daily forecast returned
+// from the OpenWeather One Call API.
+type OneCallDayForecast struct {
+	Date     uint64              `json:"dt"`
+	Temp     OneCallDayTemp      `json:"temp"`
+	Humidity int                 `json:"humidity"`
+	Weather  []OneCallDaySummary `json:"weather"`
+}
+
+// OneCallDayTemp represents a forecasted low and high temperature.
+type OneCallDayTemp struct {
+	Low  float64 `json:"min"`
+	High float64 `json:"max"`
+}
+
+// OneCallDaySummary represents a qualitative description of a daily
+// forecast.
+type OneCallDaySummary struct {
+	Desc string `json:"description"`
+}
+
+// DecodeOneCallDailyData accepts a slice of bytes representing a JSON response
+// from a call to the OpenWeather One Call API, attempts to decode the data
+// into a slice of OneCallDayForecast structs, and returns the slice. An error
+// is returned if data is empty or if there is a problem JSON-decoding the
+// bytes.
+func DecodeOneCallDailyData(data []byte) ([]OneCallDayForecast, error) {
+	if len(data) == 0 {
+		return nil, errors.New("data must be a non-empty response from the OneCall API")
+	}
+
+	var resp OneCallAPIResp
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("got error unmarshaling onecall API response: %v", err)
+	}
+
+	return resp.Daily, nil
+}
+
+// validUnit accepts a string and returns true if it represents a valid
+// weather measurement unit ("standard", "metric", "imperial")
+func validUnit(u string) bool {
+	u = strings.ToLower(u)
+	return u == "standard" || u == "metric" || u == "imperial"
 }
