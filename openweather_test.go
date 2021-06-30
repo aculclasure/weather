@@ -346,6 +346,11 @@ func TestGetOneCallDataWithInvalidUnitsReturnsError(t *testing.T) {
 	}
 }
 
+func TestDecodeDailyForecastData(t *testing.T) {
+	t.Parallel()
+
+}
+
 // closeEnough accepts 2 float64 values and returns true if they are
 // within 0.001 of each other or returns false otherwise.
 func closeEnough(a, b float64) bool {
